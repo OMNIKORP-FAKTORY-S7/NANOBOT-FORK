@@ -105,10 +105,30 @@ it("continues through telemetry-only fragments until another message is visible"
   await waitFor(() => expect(result.current.prompts[0]?.id).toBe("u10"));
   await act(async () => result.current.jump("u10"));
   await act(async () => result.current.newer());
-  await act(async () => result.current.newer());
-  await act(async () => result.current.newer());
   await waitFor(() => expect(result.current.window?.messages.map((row) => row.content)).toContain("Visible answer"));
   expect(api.fetchWebuiThread).toHaveBeenCalledTimes(5);
+});
+
+it.each(["exhausted", "error"] as const)("preserves readable navigation after several bookkeeping pages end in %s", async (outcome) => {
+  const { result } = renderHook(() => usePromptHistory("a", 1, latest), { wrapper: wrapper() });
+  await waitFor(() => expect(result.current.prompts).toHaveLength(2000));
+  await act(async () => result.current.jump("u10"));
+  const original = result.current.window!.messages;
+  for (let cursor = 9; cursor >= 6; cursor--) {
+    vi.mocked(api.fetchWebuiThread).mockResolvedValueOnce({ ...page(cursor), events: [] });
+  }
+  if (outcome === "error") vi.mocked(api.fetchWebuiThread).mockRejectedValueOnce(new Error("offline"));
+  else vi.mocked(api.fetchWebuiThread).mockResolvedValueOnce({ ...page(0), events: [] });
+  await act(async () => result.current.older());
+  await waitFor(() => expect(result.current.loading).toBe(false));
+  expect(result.current.window!.messages).toEqual(original);
+  if (outcome === "error") {
+    expect(result.current.error).toBe("offline");
+    vi.mocked(api.fetchWebuiThread).mockResolvedValueOnce(page(5));
+    await act(async () => result.current.retry());
+    expect(api.fetchWebuiThread).toHaveBeenLastCalledWith("test", "a", expect.objectContaining({ before: "6" }));
+    expect(result.current.window!.messages.map((row) => row.content)).toContain("question 5");
+  } else expect(result.current.window?.hasMoreBefore).toBe(false);
 });
 
 it("does not mix navigation pages from a replaced session", async () => {
